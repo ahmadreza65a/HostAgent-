@@ -9,39 +9,43 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Find project (zip or files)
+      - name: Find project
         run: |
           Z=$(ls *.zip 2>/dev/null | head -1)
           if [ -n "$Z" ]; then unzip -q -o "$Z" -d /tmp/src; ROOT=/tmp/src; else ROOT=.; fi
           S=$(find "$ROOT" -name settings.gradle.kts -not -path "*/build/*" | head -1)
-          if [ -z "$S" ]; then echo "Project files not found. Upload HostAgent.zip to the repo."; exit 1; fi
+          if [ -z "$S" ]; then echo "::error::Project files not found. Upload HostAgent.zip to the repo."; exit 1; fi
           echo "PROJ=$(cd "$(dirname "$S")" && pwd)" >> $GITHUB_ENV
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - uses: android-actions/setup-android@v3
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+      - name: Setup Java 17 and Gradle
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> $GITHUB_ENV
+          curl -sSL -o "$RUNNER_TEMP/gradle.zip" https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.9/bin" >> $GITHUB_PATH
+          if [ -z "$ANDROID_HOME" ]; then echo "::error::Android SDK not found on runner"; exit 1; fi
 
       - name: Build APK
         run: |
           cd "$PROJ"
-          gradle :app:assembleDebug --no-daemon --stacktrace
+          set -o pipefail
+          if ! gradle :app:assembleDebug --no-daemon --console=plain 2>&1 | tee "$RUNNER_TEMP/build.log"; then
+            { grep -E "^e: " "$RUNNER_TEMP/build.log"; grep -A3 "What went wrong" "$RUNNER_TEMP/build.log"; } \
+              | sed -E 's#file://[^ ]*/com/hostagent/app/##' | head -40 \
+              | while IFS= read -r l; do [ -n "$l" ] && echo "::error::$l"; done
+            exit 1
+          fi
           cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/HostAgent.apk"
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: HostAgent build ${{ github.run_number }}
-          files: HostAgent.apk
-          make_latest: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" HostAgent.apk \
+            --repo "${{ github.repository }}" \
+            --title "HostAgent build ${{ github.run_number }}" \
+            --notes "HostAgent.apk را دانلود و نصب کنید." --latest
