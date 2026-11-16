@@ -1,1 +1,47 @@
+name: Build APK
 
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find project (zip or files)
+        run: |
+          Z=$(ls *.zip 2>/dev/null | head -1)
+          if [ -n "$Z" ]; then unzip -q -o "$Z" -d /tmp/src; ROOT=/tmp/src; else ROOT=.; fi
+          S=$(find "$ROOT" -name settings.gradle.kts -not -path "*/build/*" | head -1)
+          if [ -z "$S" ]; then echo "Project files not found. Upload HostAgent.zip to the repo."; exit 1; fi
+          echo "PROJ=$(cd "$(dirname "$S")" && pwd)" >> $GITHUB_ENV
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        run: |
+          cd "$PROJ"
+          gradle :app:assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/HostAgent.apk"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: HostAgent build ${{ github.run_number }}
+          files: HostAgent.apk
+          make_latest: true
